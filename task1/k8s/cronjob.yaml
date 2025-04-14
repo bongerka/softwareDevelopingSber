@@ -1,0 +1,23 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: log-archiver
+spec:
+  schedule: "*/10 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: log-archiver
+            image: alpine:latest
+            command: ["/bin/sh"]
+            args: ["-c", "apk add --no-cache curl tar && timestamp=$(date +%Y%m%d_%H%M%S) && mkdir -p /archive && curl -s http://logging-app-service/logs > /archive/app.log && tar -czf /archive/app-logs-$timestamp.tar.gz /archive/app.log && echo 'Archive created successfully'"]
+            volumeMounts:
+            - name: archive-volume
+              mountPath: /archive
+          volumes:
+          - name: archive-volume
+            persistentVolumeClaim:
+              claimName: log-archive-pvc
+          restartPolicy: OnFailure 
