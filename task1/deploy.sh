@@ -1,37 +1,67 @@
 #!/bin/bash
 
-# Exit on error
 set -e
 
-echo "Building Docker image..."
+# Check if kubectl is installed
+if ! command -v kubectl &> /dev/null; then
+    echo "Error: kubectl is not installed"
+    exit 1
+fi
+
+# Check if cluster is accessible
+if ! kubectl cluster-info &> /dev/null; then
+    echo "Error: Cannot connect to Kubernetes cluster"
+    exit 1
+fi
+
+# Install Istio if not already installed
+if ! command -v istioctl &> /dev/null; then
+    echo "Installing Istio..."
+    curl -L https://istio.io/downloadIstio | sh -
+    export PATH=$PWD/istio-1.20.0/bin:$PATH
+fi
+
+# Verify Istio version
+ISTIO_VERSION=$(istioctl version --short)
+echo "Using Istio version: $ISTIO_VERSION"
+
+# Install Istio in the cluster
+echo "Installing Istio in the cluster..."
+istioctl install --set profile=demo -y
+
+# Enable Istio injection for the default namespace
+echo "Enabling Istio injection for the default namespace..."
+kubectl label namespace default istio-injection=enabled --overwrite
+
+echo "Building Docker image"
 docker build -t logging-app:latest ./app
 
-echo "Applying Kubernetes configurations..."
+echo "Applying Kubernetes configurations"
 kubectl apply -f k8s/configmap.yaml
 kubectl apply -f k8s/deployment.yaml
 kubectl apply -f k8s/service.yaml
 kubectl apply -f k8s/daemonset.yaml
 kubectl apply -f k8s/cronjob.yaml
 
-echo "Waiting for deployment to be ready..."
+echo "Applying Istio configurations"
+kubectl apply -f k8s/istio/gateway.yaml
+kubectl apply -f k8s/istio/virtualservice.yaml
+kubectl apply -f k8s/istio/destinationrule.yaml
+
+echo "Waiting for deployment to be ready"
 kubectl rollout status deployment/logging-app
 
-echo "Setting up port forwarding..."
-kubectl port-forward service/logging-app-service 8080:80 &
+echo "Verifying Istio Gateway"
+kubectl get gateway logging-gateway
+kubectl get virtualservice logging-vs
+kubectl get destinationrule logging-dr
 
-echo "Deployment complete! The application is accessible at http://localhost:8080"
-echo "To test the application, try:"
-echo "  curl http://localhost:8080"
-echo "  curl http://localhost:8080/status"
-echo "  curl -X POST http://localhost:8080/log -d '{\"message\": \"test log\"}'"
-echo "  curl http://localhost:8080/logs"
+echo "Getting Istio Ingress Gateway IP"
+export INGRESS_IP=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
-echo -e "\nTo verify CronJob operation:"
-echo "1. Check CronJob status:"
-echo "   kubectl get cronjobs"
-echo "2. Check Jobs created by CronJob:"
-echo "   kubectl get jobs"
-echo "3. Check logs of the latest Job:"
-echo "   kubectl logs \$(kubectl get jobs --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}')"
-echo "4. List archived logs:"
-echo "   kubectl exec \$(kubectl get pods -l job-name=\$(kubectl get jobs --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}') -o jsonpath='{.items[0].metadata.name}') -- ls -l /archive" 
+if [ -z "$INGRESS_IP" ]; then
+    echo "Warning: Could not get Ingress IP. If you're using minikube, you might need to run: minikube tunnel"
+    echo "You can also try: kubectl -n istio-system get service istio-ingressgateway"
+else
+    echo "Deployment complete. The application is accessible at http://$INGRESS_IP"
+fi
