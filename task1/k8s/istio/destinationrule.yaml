@@ -1,0 +1,16 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: logging-dr
+spec:
+  host: logging-app-service
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 3
+      http:
+        maxRequestsPerConnection: 5
+    tls:
+      mode: ISTIO_MUTUAL 
